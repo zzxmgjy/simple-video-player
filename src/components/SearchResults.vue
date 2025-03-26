@@ -1,0 +1,2191 @@
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import type { ResourceSite } from '../types'
+import { load } from 'cheerio'
+import type { CheerioAPI } from 'cheerio'
+import Swal from 'sweetalert2'
+import { useTheme } from '../composables/useTheme'
+import { BookmarkIcon } from '@heroicons/vue/24/outline'
+
+interface Props {
+  sites: ResourceSite[]
+  keyword: string
+}
+
+const props = defineProps<Props>()
+const activeTab = ref(0)
+const hasSearched = ref(false)
+const searchResults = ref<{ [key: string]: string }>({})
+const isLoading = ref<{ [key: string]: boolean }>({})
+const isProxySearching = ref<{ [key: string]: boolean }>({})
+const emit = defineEmits(['updateVideoUrl'])
+const searchResultsContainer = ref<HTMLDivElement | null>(null)
+const { isDark } = useTheme()
+
+// 添加排序状态
+const isReversed = ref(true) // 默认倒序
+
+// 添加一个新的状态变量来跟踪当前是否在显示剧集列表
+const isShowingEpisodes = ref(false)
+const previousResults = ref('')
+
+// 添加标签相关的状态变量
+const currentVideoInfo = ref<{
+  title: string;
+  url: string;
+  episode: string;
+  siteRemark: string;
+  detailPageUrl?: string;
+}>({ title: '', url: '', episode: '', siteRemark: '' })
+
+// 添加一个新的状态变量来保存当前激活的剧集 URL
+const activeEpisodeUrl = ref('')
+
+// 添加一个新的状态变量来保存搜索关键词
+const savedKeyword = ref('')
+
+// 添加标签页相关的状态变量，默认显示标签页
+const showTagsTab = ref(true)
+const tagsTabContent = ref('')
+
+// 添加右键菜单相关的状态变量
+const contextMenu = ref<{
+  visible: boolean;
+  x: number;
+  y: number;
+  episodeUrl: string;
+  episodeTitle: string;
+  episodeIndex: string;
+}>({
+  visible: false,
+  x: 0,
+  y: 0,
+  episodeUrl: '',
+  episodeTitle: '',
+  episodeIndex: ''
+})
+
+// 创建一个Helper函数来处理SweetAlert2样式问题
+const setupSwalButtonStyles = () => {
+  // 全局添加一次样式就足够了
+  if (!document.getElementById('swal-custom-styles')) {
+    const style = document.createElement('style');
+    style.id = 'swal-custom-styles';
+    style.innerHTML = `
+      .swal2-actions button:focus,
+      .swal2-actions button:focus-visible {
+        box-shadow: none !important;
+        outline: none !important;
+        border: none !important;
+      }
+      .swal2-button-no-focus:focus {
+        box-shadow: none !important;
+        outline: none !important;
+        border-color: transparent !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+  
+  // 返回通用的SweetAlert2配置
+  return {
+    buttonsStyling: true,
+    customClass: {
+      confirmButton: 'swal2-button-no-focus',
+      cancelButton: 'swal2-button-no-focus',
+      denyButton: 'swal2-button-no-focus'
+    },
+    didOpen: (popup: HTMLElement) => {
+      // 对当前弹窗中的所有按钮添加点击事件，去除焦点
+      document.querySelectorAll('.swal2-actions button').forEach(button => {
+        (button as HTMLButtonElement).addEventListener('click', () => (button as HTMLButtonElement).blur());
+        (button as HTMLButtonElement).addEventListener('focus', (e) => {
+          // 防止默认聚焦样式
+          const target = e.currentTarget as HTMLButtonElement;
+          if (target) {
+            target.style.boxShadow = 'none';
+            target.style.outline = 'none';
+            target.style.border = 'none';
+          }
+        });
+      });
+    }
+  };
+}
+
+// 修改标签信息的类型定义
+interface TagInfo {
+  note: string;
+  seriesName?: string;
+  episodeNumber?: string;
+  siteName?: string;
+  detailPageUrl?: string;
+  updateDays?: number[];
+  timestamp: string;
+}
+
+// 生成标签的唯一标识符
+const generateTagKey = (siteName: string, seriesName: string): string => {
+  return `${siteName}::${seriesName}`.trim()
+}
+
+// 检查视频是否已添加标签
+const hasTag = (siteName: string, seriesName: string): boolean => {
+  try {
+    const tags = JSON.parse(localStorage.getItem('video_tags') || '{}')
+    
+    // 使用资源站点+剧集名称作为唯一标识符
+    const key = generateTagKey(siteName, seriesName)
+    return !!tags[key]
+  } catch (e) {
+    console.error('解析标签数据失败:', e)
+    return false
+  }
+}
+
+// 获取标签信息
+const getTagInfo = (siteName: string, seriesName: string): TagInfo | null => {
+  try {
+    const tags = JSON.parse(localStorage.getItem('video_tags') || '{}')
+    
+    // 使用资源站点+剧集名称作为唯一标识符
+    const key = generateTagKey(siteName, seriesName)
+    return tags[key] || null
+  } catch (e) {
+    console.error('获取标签信息失败:', e)
+    return null
+  }
+}
+
+// 保存标签信息
+const saveTag = (siteName: string, seriesName: string, episodeNumber: string, detailPageUrl: string, note: string, updateDays: number[]) => {
+  try {
+    const tags = JSON.parse(localStorage.getItem('video_tags') || '{}')
+
+    // 使用资源站点+剧集名称作为唯一标识符
+    const key = generateTagKey(siteName, seriesName)
+    
+    // 保存标签信息
+    tags[key] = { 
+      note, 
+      seriesName,
+      episodeNumber,
+      siteName,
+      detailPageUrl, // 剧集列表页面URL
+      updateDays, // 更新日期
+      timestamp: new Date().toISOString() 
+    }
+    
+    localStorage.setItem('video_tags', JSON.stringify(tags))
+  } catch (e) {
+    console.error('保存标签失败:', e)
+  }
+}
+
+// 删除标签
+const removeTag = (siteName: string, seriesName: string) => {
+  try {
+    const tags = JSON.parse(localStorage.getItem('video_tags') || '{}')
+    
+    // 使用资源站点+剧集名称作为唯一标识符
+    const key = generateTagKey(siteName, seriesName)
+    if (tags[key]) {
+      delete tags[key]
+    }
+    
+    localStorage.setItem('video_tags', JSON.stringify(tags))
+  } catch (e) {
+    console.error('删除标签失败:', e)
+  }
+}
+
+// 添加一个新的状态变量来保存标签详细信息
+const currentTagInfo = ref<TagInfo | null>(null)
+
+// 修改标签对话框显示函数
+const showTagDialog = () => {
+
+  // 如果是在标签页且有保存的标签信息，直接使用保存的信息
+  if (showTagsTab.value && currentTagInfo.value) {
+    // 使用保存的标签信息来构建弹窗
+    const tag = currentTagInfo.value
+    
+    Swal.fire({
+      title: '视频标签',
+      html: `
+        <div class="text-left space-y-3">
+          <div class="mb-2">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">剧集名称</div>
+            <input id="seriesName" class="mt-1 w-full p-2 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white" value="${tag.seriesName || ''}">
+          </div>
+          <div class="mb-2">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">追更集数</div>
+            <input id="episodeNumber" class="mt-1 w-full p-2 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white" value="${tag.episodeNumber || ''}">
+          </div>
+          <div class="mb-2">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">资源站点</div>
+            <div class="mt-1 p-2 rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100">${tag.siteName || ''}</div>
+          </div>
+          <input type="hidden" id="detailPageUrl" value="${tag.detailPageUrl || ''}">
+          <div class="mb-2">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">更新日期</div>
+            <div class="mt-1 flex flex-wrap gap-3">
+              ${['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((day, index) => `
+                <label class="inline-flex items-center">
+                  <input type="checkbox" 
+                    id="updateDay${index}" 
+                    class="form-checkbox h-4 w-4 text-blue-500 dark:text-blue-400 border-gray-300 dark:border-gray-600 rounded"
+                    ${tag.updateDays?.includes(index) ? 'checked' : ''}
+                  >
+                  <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">${day}</span>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+          <div class="mb-2">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">标签备注</div>
+            <textarea id="tagNote" class="mt-1 w-full p-2 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white min-h-[50px] max-h-[100px] overflow-y-auto resize-y" rows="3">${tag.note || ''}</textarea>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: '保存标签',
+      cancelButtonText: '删除标签',
+      confirmButtonColor: '#3B82F6',
+      cancelButtonColor: '#EF4444',
+      showDenyButton: true,
+      denyButtonText: '取消',
+      denyButtonColor: '#6B7280',
+      background: isDark.value ? '#1F2937' : '#FFFFFF',
+      color: isDark.value ? '#FFFFFF' : '#000000',
+      showClass: {
+        backdrop: 'swal2-noanimation',
+        popup: 'swal2-noanimation'
+      },
+      hideClass: {
+        popup: ''
+      },
+      preConfirm: () => {
+        // 在弹窗关闭前获取值
+        const popup = Swal.getPopup();
+        const seriesNameElement = popup?.querySelector('#seriesName') as HTMLInputElement;
+        const episodeNumberElement = popup?.querySelector('#episodeNumber') as HTMLInputElement;
+        const detailPageUrlElement = popup?.querySelector('#detailPageUrl') as HTMLInputElement;
+        const noteElement = popup?.querySelector('#tagNote') as HTMLTextAreaElement;
+        
+        const seriesName = seriesNameElement?.value || '';
+        const episodeNumber = episodeNumberElement?.value || '';
+        const detailPageUrl = detailPageUrlElement?.value || '';
+        const note = noteElement?.value || '';
+        
+        // 获取选中的更新日期
+        const updateDays = Array.from({ length: 7 }, (_, i: number) => {
+          const checkbox = popup?.querySelector(`#updateDay${i}`) as HTMLInputElement;
+          return checkbox?.checked ? i : -1;
+        }).filter((i: number) => i !== -1);
+
+        // 返回所有值供 then 回调使用
+        return { seriesName, episodeNumber, detailPageUrl, note, updateDays };
+      },
+      // 使用helper函数设置按钮样式
+      ...setupSwalButtonStyles()
+    }).then((result) => {
+      if (result.isConfirmed) {
+        const { seriesName, episodeNumber, detailPageUrl, note, updateDays } = result.value
+        
+        // 保存标签
+        saveTag(tag.siteName || '', seriesName, episodeNumber, detailPageUrl, note, updateDays)
+        
+        // 更新当前标签信息
+        currentTagInfo.value = {
+          note,
+          seriesName: seriesName,
+          episodeNumber,
+          siteName: tag.siteName || '',
+          detailPageUrl,
+          updateDays,
+          timestamp: new Date().toISOString()
+        }
+        
+        // 更新按钮样式（重新渲染）
+        if (tagsTabContent.value) {
+          const $ = load(tagsTabContent.value)
+          const $tagButton = $('button[onclick*="showTagDialog"]')
+          if ($tagButton.length) {
+            $tagButton.html(getTagButtonContent(tag.siteName || '', seriesName))
+            tagsTabContent.value = $.html()
+          }
+        }
+      } else if (result.dismiss === Swal.DismissReason.cancel) {
+        // 删除标签
+        removeTag(tag.siteName || '', tag.seriesName || '')
+        
+        // 清空当前标签信息
+        currentTagInfo.value = null
+        
+        // 更新按钮样式
+        if (tagsTabContent.value) {
+          const $ = load(tagsTabContent.value)
+          const $tagButton = $('button[onclick*="showTagDialog"]')
+          if ($tagButton.length) {
+            $tagButton.html(getTagButtonContent(tag.siteName || '', tag.seriesName || ''))
+            tagsTabContent.value = $.html()
+          }
+        }
+      }
+    })
+    
+    return
+  }
+
+  // 当前资源站点 - 修改此处逻辑
+  let currentSite = '';
+
+  if (showTagsTab.value && currentVideoInfo.value.siteRemark) {
+    // 如果是标签页模式，直接使用当前视频信息中保存的站点备注
+    currentSite = currentVideoInfo.value.siteRemark;
+
+  } else {
+    // 否则使用正常的逻辑
+    currentSite = props.sites.filter(s => s.active)[activeTab.value]?.remark || '';
+
+  }
+  
+  let seriesName = savedKeyword.value || (props.keyword || '')
+  
+  // 获取追更集数或最新集数
+  let currentEpisode = ''
+
+  // 尝试获取现有的标签信息
+  const tagInfo = getTagInfo(currentSite, seriesName)
+  
+  // 优先级1：如果没有找到激活状态的剧集，但有标签保存的值，则使用标签中保存的集数
+  if (tagInfo && tagInfo.episodeNumber) {
+    currentEpisode = tagInfo.episodeNumber
+  }
+  
+  // 优先级2：如果还是没有找到集数，尝试从搜索结果中获取最新的一集
+  if (!currentEpisode && searchResults.value[activeTab.value]) {
+    const $ = load(searchResults.value[activeTab.value])
+    const $firstEpisode = $('.m3u8-item').first()
+    if ($firstEpisode.length) {
+      const textElement = $firstEpisode.find('.text-center, [class*="text-center"]').first()
+      if (textElement.length) {
+        currentEpisode = textElement.text().trim()
+      } else {
+        currentEpisode = $firstEpisode.text().trim()
+      }
+    }
+  }
+  
+  // 获取剧集列表页面URL
+  let detailPageUrl = ''
+  if (isShowingEpisodes.value) {
+    // 如果当前正在显示剧集列表，则使用上一次点击的URL
+    detailPageUrl = currentVideoInfo.value.detailPageUrl || ''
+  }
+  
+  if (tagInfo) {
+    // 如果找到了标签信息，使用保存的值
+    seriesName = tagInfo.seriesName || seriesName
+    detailPageUrl = tagInfo.detailPageUrl || detailPageUrl
+  }
+  
+  const note = tagInfo?.note || ''
+  const isTagged = hasTag(currentSite, seriesName)
+  const updateDays = tagInfo?.updateDays || []
+  
+  Swal.fire({
+    title: '视频标签',
+    html: `
+      <div class="text-left space-y-3">
+        <div class="mb-2">
+          <div class="text-sm font-medium text-gray-500 dark:text-gray-400">剧集名称</div>
+          <input id="seriesName" class="mt-1 w-full p-2 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white" value="${seriesName}">
+        </div>
+        <div class="mb-2">
+          <div class="text-sm font-medium text-gray-500 dark:text-gray-400">追更集数</div>
+          <input id="episodeNumber" class="mt-1 w-full p-2 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white" value="${currentEpisode}">
+        </div>
+        <div class="mb-2">
+          <div class="text-sm font-medium text-gray-500 dark:text-gray-400">资源站点</div>
+          <div class="mt-1 p-2 rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100">${currentSite}</div>
+        </div>
+        <input type="hidden" id="detailPageUrl" value="${detailPageUrl}">
+        <div class="mb-2">
+          <div class="text-sm font-medium text-gray-500 dark:text-gray-400">更新日期</div>
+          <div class="mt-1 flex flex-wrap gap-3">
+            ${['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((day, index) => `
+              <label class="inline-flex items-center">
+                <input type="checkbox" 
+                  id="updateDay${index}" 
+                  class="form-checkbox h-4 w-4 text-blue-500 dark:text-blue-400 border-gray-300 dark:border-gray-600 rounded"
+                  ${updateDays.includes(index) ? 'checked' : ''}
+                >
+                <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">${day}</span>
+              </label>
+            `).join('')}
+          </div>
+        </div>
+        <div class="mb-2">
+          <div class="text-sm font-medium text-gray-500 dark:text-gray-400">标签备注</div>
+          <textarea id="tagNote" class="mt-1 w-full p-2 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white min-h-[50px] max-h-[100px] overflow-y-auto resize-y" rows="3">${note}</textarea>
+        </div>
+      </div>
+    `,
+    showCancelButton: true,
+    confirmButtonText: '保存标签',
+    cancelButtonText: isTagged ? '删除标签' : '取消',
+    confirmButtonColor: '#3B82F6',
+    cancelButtonColor: isTagged ? '#EF4444' : '#6B7280',
+    showDenyButton: isTagged,
+    denyButtonText: '取消',
+    denyButtonColor: '#6B7280',
+    background: isDark.value ? '#1F2937' : '#FFFFFF',
+    color: isDark.value ? '#FFFFFF' : '#000000',
+    showClass: {
+      backdrop: 'swal2-noanimation',
+      popup: 'swal2-noanimation'
+    },
+    hideClass: {
+      popup: ''
+    },
+    preConfirm: () => {
+      // 在弹窗关闭前获取值
+      const popup = Swal.getPopup();
+      const seriesNameElement = popup?.querySelector('#seriesName') as HTMLInputElement;
+      const episodeNumberElement = popup?.querySelector('#episodeNumber') as HTMLInputElement;
+      const detailPageUrlElement = popup?.querySelector('#detailPageUrl') as HTMLInputElement;
+      const noteElement = popup?.querySelector('#tagNote') as HTMLTextAreaElement;
+      
+      const seriesName = seriesNameElement?.value || '';
+      const episodeNumber = episodeNumberElement?.value || '';
+      const detailPageUrl = detailPageUrlElement?.value || '';
+      const note = noteElement?.value || '';
+      
+      // 获取选中的更新日期
+      const updateDays = Array.from({ length: 7 }, (_, i: number) => {
+        const checkbox = popup?.querySelector(`#updateDay${i}`) as HTMLInputElement;
+        return checkbox?.checked ? i : -1;
+      }).filter((i: number) => i !== -1);
+
+      // 返回所有值供 then 回调使用
+      return { seriesName, episodeNumber, detailPageUrl, note, updateDays };
+    },
+    // 使用helper函数设置按钮样式
+    ...setupSwalButtonStyles()
+  }).then((result) => {
+    if (result.isConfirmed) {
+      const { seriesName, episodeNumber, detailPageUrl, note, updateDays } = result.value
+      
+      // 保存标签
+      saveTag(tagInfo?.siteName || currentSite, seriesName, episodeNumber, detailPageUrl, note, updateDays)
+      
+      // 更新当前标签信息
+      if (showTagsTab.value) {
+        
+        currentTagInfo.value = {
+          note,
+          seriesName: seriesName,
+          episodeNumber,
+          siteName: tagInfo?.siteName || '',
+          detailPageUrl,
+          updateDays,
+          timestamp: new Date().toISOString()
+        }
+      }
+      
+      // 更新按钮样式（重新渲染）
+      if (searchResults.value[activeTab.value]) {
+        const $ = load(searchResults.value[activeTab.value])
+        const $tagButton = $('button[onclick*="showTagDialog"]')
+        if ($tagButton.length) {
+          $tagButton.html(getTagButtonContent(tagInfo?.siteName || currentSite, seriesName))
+          searchResults.value[activeTab.value] = $.html()
+        }
+      }
+    } else if (result.dismiss === Swal.DismissReason.cancel && isTagged) {
+      // 删除标签
+      removeTag(tagInfo?.siteName || currentSite, seriesName)
+      
+      // 如果在标签页中，清空当前标签信息
+      if (showTagsTab.value) {
+        currentTagInfo.value = null
+      }
+      
+      // 更新按钮样式
+      if (searchResults.value[activeTab.value]) {
+        const $ = load(searchResults.value[activeTab.value])
+        const $tagButton = $('button[onclick*="showTagDialog"]')
+        if ($tagButton.length) {
+          $tagButton.html(getTagButtonContent(tagInfo?.siteName || currentSite, seriesName))
+          searchResults.value[activeTab.value] = $.html()
+        }
+      }
+    }
+  })
+}
+
+// 获取标签按钮的内容
+const getTagButtonContent = (siteName: string = '', seriesName: string = '') => {
+  const hasTagged = hasTag(siteName, seriesName)
+  return hasTagged
+    ? '<span class="mr-1 text-green-500">✓</span>标签'
+    : '<span class="mr-1 text-gray-400">?</span>标签'
+}
+
+// 获取站点URL
+const getSiteUrl = (site: ResourceSite) => {
+  if (!props.keyword) return site.url
+  return site.url.includes('?') ? `${site.url}${props.keyword}` : site.url
+}
+
+// 执行所有站点的搜索
+const performSearch = async () => {
+  if (!props.keyword) return
+  
+  // 添加右上角搜索中提示
+  const searchingMessage = document.createElement('div')
+  searchingMessage.id = 'searching-message'
+  searchingMessage.className = 'fixed top-4 right-4 bg-blue-500 text-white px-4 py-2 rounded shadow-lg z-50 flex items-center'
+  searchingMessage.innerHTML = `
+    <div class="mr-2 w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+    <span>正在搜索中...</span>
+  `
+  document.body.appendChild(searchingMessage)
+  
+  // 保存搜索关键词
+  savedKeyword.value = props.keyword
+  
+  // 重置所有状态
+  hasSearched.value = true
+  isLoading.value = {}
+  searchResults.value = {}
+  
+  // 初始化所有激活站点的加载状态
+  const activeSites = props.sites.filter(s => s.active)
+  
+  // 记录搜索完成的站点数
+  let completedSites = 0
+  
+  const searchPromises = activeSites.map((site, index) => {
+    isLoading.value[index] = true
+    return new Promise<void>(async (resolve) => {
+      await searchSite(site, index)
+      completedSites++
+      
+      // 如果所有站点都已搜索完成，移除提示
+      if (completedSites === activeSites.length) {
+        const message = document.getElementById('searching-message')
+        if (message) {
+          message.remove()
+          // 显示搜索完成提示
+          const completeMessage = document.createElement('div')
+          completeMessage.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded shadow-lg z-50'
+          completeMessage.textContent = '搜索完成'
+          document.body.appendChild(completeMessage)
+          setTimeout(() => completeMessage.remove(), 2000)
+        }
+      }
+      resolve()
+    })
+  })
+  
+  // 等待所有搜索完成
+  await Promise.all(searchPromises)
+}
+
+// 执行单个站点的搜索
+const searchSite = async (site: ResourceSite, index: number) => {
+  if (!site.active) return
+
+  try {
+    isLoading.value[index] = true
+    
+    // 构建搜索URL
+    const searchUrl = site.url.includes('?') ? `${site.url}${props.keyword}` : site.url
+
+    // 准备请求参数
+    const requestData = {
+      url: searchUrl,
+      searchResultClass: site.searchResultClass,
+      isPost: site.isPost,
+      postData: site.postData ? JSON.parse(site.postData.replace('{search_value}', props.keyword)) : undefined
+    }
+
+    // 打印FormData格式的请求数据
+    if (site.isPost && requestData.postData) {
+      const formData = new FormData()
+      Object.entries(requestData.postData).forEach(([key, value]) => {
+        formData.append(key, String(value))
+      })
+    }
+
+    // 根据环境选择正确的 API 端点
+    // 本地开发环境使用 /api/search, Cloudflare/Vercel 环境使用 /functions/api/search
+    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+      ? '/api/search' 
+      : '/functions/api/search'
+
+    // 发送请求
+    const response = await fetch(apiEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestData)
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('请求失败:', {
+        status: response.status,
+        statusText: response.statusText,
+        error: errorText
+      })
+      throw new Error(`搜索失败: ${response.status} ${response.statusText} - ${errorText}`)
+    }
+
+    const html = await response.text()
+    if (!html.trim()) {
+      console.warn('返回的内容为空')
+      throw new Error('返回的内容为空')
+    }
+
+    // 解析内容
+    const $ = load(html)
+
+    // 输出页面中所有可用的类名，以帮助调试
+    const allClasses = new Set<string>()
+    $('*[class]').each((_, el) => {
+      const classes = $(el).attr('class')?.split(/\s+/) || []
+      classes.forEach(c => allClasses.add(c))
+    })
+
+    // 处理搜索结果
+    await processResults($, searchUrl, site, index)
+
+  } catch (error: any) {
+    console.error(`搜索失败 (${site.remark}):`, error)
+    searchResults.value[index] = `
+      <div class="error-message p-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-100 dark:border-red-900/30">
+        <p class="font-medium">搜索出错:</p>
+        <p class="mt-1">${error.message}</p>
+        <p class="mt-2 text-sm">请检查网络连接或稍后重试</p>
+      </div>
+    `
+
+  } finally {
+    isLoading.value[index] = false
+  }
+}
+
+// 处理搜索结果的函数
+const processResults = async ($: CheerioAPI, searchUrl: string, site: ResourceSite, index: number) => {
+
+  let resultHtml = '<div class="search-results space-y-2">'
+  let linkCount = 0
+
+  if (site.searchResultClass) {
+
+    const $results = $(`.${site.searchResultClass}, [class*="${site.searchResultClass}"]`)
+
+    if ($results.length > 0) {
+      const $container = $results.first()
+
+      const $items = $container.find('li').filter((_, li) => {
+        const $li = $(li)
+        const isPagination = 
+          $li.closest('.mac_pages, .page_tip, .page_info, .pages').length > 0 ||
+          /^[0-9]+$/.test($li.text().trim()) ||
+          /^(首页|尾页|上一页|下一页|跳页|跳转)/.test($li.text().trim()) ||
+          $li.find('.page_link, .page_current, .page_input, .page_btn, .mac_page_go').length > 0 ||
+          !$li.find('a').length ||
+          $li.find('a').text().trim().match(/^([0-9]+|首页|尾页|上一页|下一页|跳页|跳转)$/)
+        return !isPagination
+      })
+
+
+      // 如果找到了匹配元素但没有有效列表项，尝试使用代理服务
+      if ($items.length === 0) {
+        isLoading.value[index] = true
+        isProxySearching.value[index] = true
+        await nextTick()
+        return tryProxySearch(searchUrl, site, index)
+      }
+
+      $items.each((_, item) => {
+        const $item = $(item)
+        const $link = $item.find('a').first()
+        const $type = $item.find('.xing_vb5, .category').first()
+        const $time = $item.find('.xing_vb7, .time').first()
+        
+        if ($link.length) {
+          const href = $link.attr('href')
+          if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+            linkCount++
+            try {
+              const absoluteUrl = new URL(href, searchUrl).href
+              const title = $link.text().trim()
+              const type = $type.text().trim()
+              const time = $time.text().trim()
+
+              resultHtml += `
+                <div class="result-item">
+                  <div class="block p-4 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 rounded cursor-pointer shadow-sm dark:shadow-gray-900/10"
+                       data-url="${absoluteUrl}"
+                  >
+                    <div class="flex flex-col gap-2">
+                      <div class="text-lg font-medium text-gray-900 dark:text-gray-100">${title}</div>
+                      ${type ? `<div class="text-sm text-gray-500 dark:text-gray-400">${type}</div>` : ''}
+                      ${time ? `<div class="text-sm text-gray-400 dark:text-gray-500">${time}</div>` : ''}
+                    </div>
+                  </div>
+                </div>
+              `
+            } catch (e) {
+              console.warn('URL转换失败:', e)
+            }
+          }
+        }
+      })
+    } else {
+      console.warn('未找到匹配的搜索结果容器')
+      isLoading.value[index] = true
+      isProxySearching.value[index] = true
+      await nextTick()
+      return tryProxySearch(searchUrl, site, index)
+    }
+  } else {
+    console.warn('未指定搜索结果类名')
+    isLoading.value[index] = true
+    isProxySearching.value[index] = true
+    await nextTick()
+    return tryProxySearch(searchUrl, site, index)
+  }
+
+  if (linkCount === 0) {
+    isLoading.value[index] = true
+    isProxySearching.value[index] = true
+    await nextTick()
+    return tryProxySearch(searchUrl, site, index)
+  }
+
+  resultHtml += '</div>'
+  searchResults.value[index] = resultHtml
+
+  return true
+}
+
+// 修改代理搜索函数
+const tryProxySearch = async (originalUrl: string, site: ResourceSite, index: number) => {
+  try {
+    // 设置代理搜索状态
+    isLoading.value[index] = true
+    isProxySearching.value[index] = true
+    await nextTick()
+    
+    const proxyUrl = `https://r.jina.ai/${originalUrl}`
+
+    const response = await fetch(proxyUrl, {
+      headers: {
+        'Accept': 'text/event-stream',
+        'X-No-Cache': 'true',
+        'X-Timeout': '5'
+      }
+    })
+
+    if (!response.ok) {
+      throw new Error(`代理请求失败: ${response.status}`)
+    }
+
+    const text = await response.text()
+    
+    // 解析 markdown 格式的响应
+    const markdownLinkPattern = /\[(.*?)\]\((.*?)\)/g
+    let match
+    let matches = new Map<string, { title: string, url: string }>()
+    
+    // 先收集所有匹配项，使用 Map 进行去重
+    while ((match = markdownLinkPattern.exec(text)) !== null) {
+      const [_, title, url] = match
+      if (title && url && (title.includes('更新') || url.includes('detail')) && title !== '点击进入' && !title.includes('豆瓣')) {
+        // 使用标题作为键来去重
+        const key = title.trim()
+        if (!matches.has(key)) {
+          matches.set(key, { title: title.trim(), url })
+        }
+      }
+    }
+
+    // 如果没有找到链接，设置空结果
+    if (matches.size === 0) {
+      searchResults.value[index] = '<div class="no-results">未找到有效链接</div>'
+      return false
+    }
+
+    // 转换为数组并排序
+    const uniqueMatches = Array.from(matches.values())
+    uniqueMatches.sort((a, b) => a.title.localeCompare(b.title))
+
+    // 生成结果HTML
+    let resultHtml = '<div class="search-results space-y-2">'
+    
+    // 生成HTML
+    for (const { title, url } of uniqueMatches) {
+      try {
+        const absoluteUrl = new URL(url, originalUrl).href
+        resultHtml += `
+          <div class="result-item">
+            <div class="block p-4 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 rounded cursor-pointer shadow-sm dark:shadow-gray-900/10"
+                 data-url="${absoluteUrl}"
+            >
+              <div class="flex flex-col gap-2">
+                <div class="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2 text-center">
+                  ${title}
+                </div>
+              </div>
+            </div>
+          </div>
+        `
+      } catch (e) {
+        console.warn('URL转换失败:', e)
+      }
+    }
+
+    resultHtml += '</div>'
+    
+    // 设置搜索结果
+    searchResults.value[index] = resultHtml
+    
+    return true
+
+  } catch (error) {
+    console.error('代理搜索失败:', error)
+    searchResults.value[index] = `
+      <div class="error-message p-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-100 dark:border-red-900/30">
+        <p class="font-medium">代理搜索失败:</p>
+        <p class="mt-1">${error instanceof Error ? error.message : '未知错误'}</p>
+        <p class="mt-2 text-sm">请检查网络连接或稍后重试</p>
+      </div>
+    `
+
+    return false
+  } finally {
+    isLoading.value[index] = false
+    isProxySearching.value[index] = false
+  }
+}
+
+// 处理点击事件获取m3u8链接
+const handleResultClick = async (url: string, customKeyword?: string) => {
+  try {
+    isLoading.value[activeTab.value] = true
+    
+    // 保存当前的搜索结果
+    previousResults.value = searchResults.value[activeTab.value]
+    isShowingEpisodes.value = true
+    
+    // 保存剧集列表页面URL
+    currentVideoInfo.value.detailPageUrl = url
+    
+    // 如果提供了自定义关键词，使用它
+    if (customKeyword) {
+      savedKeyword.value = customKeyword
+    }
+
+    // 根据环境选择正确的 API 端点
+    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+      ? '/api/search' 
+      : '/functions/api/search'
+    
+    const response = await fetch(apiEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url })
+    })
+
+    if (!response.ok) {
+      console.error('请求失败:', response.status)
+      throw new Error(`请求失败: ${response.status}`)
+    }
+
+    const html = await response.text()
+    
+    const $ = load(html)
+    
+    // 输出页面中所有可用的类名，以帮助调试
+    const allClasses = new Set<string>()
+    $('*[class]').each((_, el) => {
+      const classes = $(el).attr('class')?.split(/\s+/) || []
+      classes.forEach(c => allClasses.add(c))
+    })
+    
+    // 查找m3u8链接
+    const playLinks = $('span, a').filter(function(this: any) {
+      const $el = $(this)
+      const text = $el.text().trim()
+      return text.toLowerCase().includes('.m3u8')
+    })
+
+    // 创建结果容器
+    let resultHtml = `
+      <div class="space-y-4" data-search-keyword="${savedKeyword.value}">
+        <div class="flex justify-between items-center">
+          <button 
+            class="px-4 py-2 text-sm rounded-lg bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 hover:border-primary-light dark:hover:border-primary-dark shadow-sm hover:shadow font-medium flex items-center gap-1"
+            onclick="document.dispatchEvent(new CustomEvent('goBack'))"
+          >
+            <span class="opacity-60">←</span>
+            返回
+          </button>
+          <button 
+            class="px-4 py-2 text-sm rounded-lg bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 hover:border-primary-light dark:hover:border-primary-dark shadow-sm hover:shadow font-medium"
+            onclick="document.dispatchEvent(new CustomEvent('showTagDialog'))"
+          >
+            ${getTagButtonContent(props.sites.filter(s => s.active)[activeTab.value]?.remark, savedKeyword.value)}
+          </button>
+          <button 
+            class="px-4 py-2 text-sm rounded-lg bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 hover:border-primary-light dark:hover:border-primary-dark shadow-sm hover:shadow font-medium"
+            onclick="document.dispatchEvent(new CustomEvent('toggleSort'))"
+          >
+            ${isReversed.value ? '切换为正序' : '切换为倒序'}
+            <span class="ml-1 opacity-60">${isReversed.value ? '↑' : '↓'}</span>
+          </button>
+        </div>
+        <div class="m3u8-results flex flex-wrap gap-3">
+    `
+    
+    let linkCount = 0
+    // 使用 Map 来存储链接，以 URL 为键，确保去重
+    const linksMap = new Map<string, { title: string; url: string }>()
+    
+    // 收集所有链接
+    let autoNumberIndex = 1
+    playLinks.each((_, link) => {
+      const $link = $(link)
+      const text = $link.text().trim()
+      
+      // 处理包含$分隔符的情况
+      const parts = text.split('$')
+      if (parts.length >= 2) {
+        const title = parts[0].trim()
+        const videoUrl = parts[1].trim()
+        
+        if (videoUrl.toLowerCase().includes('.m3u8')) {
+          // 如果标题为空，使用自动编号，否则使用原标题
+          const finalTitle = !title ? String(autoNumberIndex++) : title
+          // 使用 URL 作为键来去重
+          if (!linksMap.has(videoUrl)) {
+            linksMap.set(videoUrl, { title: finalTitle, url: videoUrl })
+            linkCount++
+          }
+        }
+      }
+    }) 
+    
+    // 转换为数组
+    let links = Array.from(linksMap.values())
+    
+    // 根据排序状态排序
+    if (isReversed.value) {
+      links.reverse()
+    }
+    
+    // 生成HTML
+    links.forEach(({ title, url }) => {
+      // 检查当前URL是否与当前激活的剧集URL匹配
+      const isCurrentVideo = url === activeEpisodeUrl.value
+      resultHtml += `
+        <div class="m3u8-item group relative bg-white dark:bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 shadow-sm hover:shadow-md dark:shadow-gray-900/10 border border-gray-100 dark:border-gray-700 ${isCurrentVideo ? 'ring-2 ring-primary-light dark:ring-primary-dark active' : ''}"
+             data-url="${url}"
+        >
+          <div class="p-3 text-sm font-medium ${isCurrentVideo ? 'text-primary-light dark:text-primary-dark' : 'text-gray-700 dark:text-gray-200'} text-center group-hover:text-primary-light dark:group-hover:text-primary-dark line-clamp-2 break-words" title="${title}">
+            ${title}
+          </div>
+          <div class="absolute inset-0 rounded-lg ring-1 ring-inset ring-gray-200 dark:ring-gray-700 group-hover:ring-primary-light/20 dark:group-hover:ring-primary-dark/20"></div>
+          <div class="absolute inset-0 rounded-lg bg-primary-light dark:bg-primary-dark ${isCurrentVideo ? 'opacity-10' : 'opacity-0'} group-hover:opacity-10 transition-opacity duration-200 bg-active"></div>
+          <div class="absolute inset-0 rounded-lg ring-2 ring-primary-light dark:ring-primary-dark ring-offset-2 ring-offset-white dark:ring-offset-gray-800 ${isCurrentVideo ? 'opacity-100' : 'opacity-0'} group-hover:opacity-100 transition-opacity duration-200 ring-active"></div>
+        </div>
+      `
+    })
+    
+    resultHtml += '</div></div>'
+    
+    if (linkCount === 0) {
+      console.warn('未找到可播放的剧集')
+      resultHtml = `
+        <div class="no-results p-4 text-center text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+          未找到可播放的剧集
+          <div class="mt-2 text-sm">页面内容片段：</div>
+          <div class="mt-2 text-xs text-left bg-white dark:bg-gray-800 p-4 rounded overflow-auto max-h-40 border border-gray-100 dark:border-gray-700">
+            ${$('body').html()?.substring(0, 500) || '无法获取页面内容'}
+          </div>
+        </div>
+      `
+    }
+    
+    searchResults.value[activeTab.value] = resultHtml
+
+  } catch (error) {
+    console.error('获取剧集链接失败:', error)
+    searchResults.value[activeTab.value] = `
+      <div class="error-message p-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-100 dark:border-red-900/30">
+        <p class="font-medium">获取剧集链接失败:</p>
+        <p class="mt-1">${error instanceof Error ? error.message : '未知错误'}</p>
+      </div>
+    `
+
+  } finally {
+    isLoading.value[activeTab.value] = false
+  }
+}
+
+// 修改事件委托处理函数
+const handleContainerClick = (event: MouseEvent) => {
+  // 如果右键菜单是可见的，先关闭它
+  if (contextMenu.value.visible) {
+    closeContextMenu()
+    return
+  }
+  
+  const target = event.target as HTMLElement
+  const clickedItem = target.closest('[data-url]')
+
+  if (clickedItem) {
+    const url = clickedItem.getAttribute('data-url')
+    if (url) {
+      
+      // 检查是否是m3u8链接
+      if (url.toLowerCase().includes('.m3u8')) {
+        
+        // 保存当前视频信息用于标签功能
+        const title = clickedItem.querySelector('.text-center, .text-primary-light, .text-primary-dark, [class*="text-primary"], [class*="text-center"]')?.textContent?.trim() || ''
+
+        // 在标签页模式下保留原有的站点信息
+        let siteRemark = '';
+        if (showTagsTab.value && currentVideoInfo.value.siteRemark) {
+          // 如果在标签页模式，保留原有的站点备注
+          siteRemark = currentVideoInfo.value.siteRemark;
+        } else {
+          // 否则使用正常的逻辑
+          siteRemark = props.sites.filter(s => s.active)[activeTab.value]?.remark || '';
+        }
+
+        currentVideoInfo.value = {
+          title: title,
+          episode: title,
+          url: url,
+          siteRemark: siteRemark,
+          detailPageUrl: currentVideoInfo.value.detailPageUrl || url
+        }
+        
+
+        // 更新激活的剧集 URL
+        activeEpisodeUrl.value = url
+        
+        // 获取当前标签页中的所有剧集按钮
+        let m3u8Items: NodeListOf<Element>;
+        if (showTagsTab.value) {
+          // 如果在标签页中，只选择标签页中的剧集按钮
+          m3u8Items = document.querySelectorAll('.search-results-container .m3u8-item');
+        } else {
+          // 如果在搜索结果页中，只选择当前活动标签页中的剧集按钮
+          const activeTabContainer = document.querySelector(`[v-show="activeTab === ${activeTab.value}"]`);
+          if (activeTabContainer) {
+            m3u8Items = activeTabContainer.querySelectorAll('.m3u8-item');
+          } else {
+            m3u8Items = document.querySelectorAll('.search-results-container .m3u8-item');
+          }
+        }
+        
+        // 移除所有剧集的active类和激活状态样式
+        m3u8Items.forEach(item => {
+          // 移除active类
+          item.classList.remove('active')
+          
+          // 移除ring-2和ring-primary相关类（蓝色边框）
+          item.classList.remove('ring-2', 'ring-primary-light', 'ring-primary-dark')
+          
+          // 移除活动状态的样式
+          const rings = item.querySelectorAll('.ring-active')
+          rings.forEach(ring => {
+            ring.classList.remove('opacity-100')
+            ring.classList.add('opacity-0')
+          })
+          
+          const bg = item.querySelector('.bg-active')
+          if (bg) {
+            bg.classList.remove('opacity-10')
+            bg.classList.add('opacity-0')
+          }
+          
+          // 恢复文本颜色
+          const textElement = item.querySelector('.text-primary-light, .text-primary-dark')
+          if (textElement) {
+            textElement.classList.remove('text-primary-light', 'text-primary-dark')
+            textElement.classList.add('text-gray-700', 'dark:text-gray-200')
+          }
+        })
+        
+        // 为当前点击的项目添加active类和样式
+        clickedItem.classList.add('active')
+        
+        // 添加蓝色边框
+        clickedItem.classList.add('ring-2', 'ring-primary-light', 'dark:ring-primary-dark')
+        
+        // 添加活动状态的样式
+        const rings = clickedItem.querySelectorAll('.ring-active')
+        rings.forEach(ring => {
+          ring.classList.remove('opacity-0')
+          ring.classList.add('opacity-100')
+        })
+        
+        const bg = clickedItem.querySelector('.bg-active')
+        if (bg) {
+          bg.classList.remove('opacity-0')
+          bg.classList.add('opacity-10')
+        }
+        
+        // 更新文本颜色
+        const textElement = clickedItem.querySelector('.text-gray-700, .dark\\:text-gray-200')
+        if (textElement) {
+          textElement.classList.remove('text-gray-700', 'dark:text-gray-200')
+          textElement.classList.add('text-primary-light', 'dark:text-primary-dark')
+        }
+        
+        // 确保事件被正确触发
+        emit('updateVideoUrl', url)
+        
+        // 添加一个提示，表明链接已播放
+        const message = document.createElement('div')
+        message.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded shadow-lg'
+        message.textContent = '链接已播放'
+        document.body.appendChild(message)
+        setTimeout(() => message.remove(), 2000)
+      } else {
+        handleResultClick(url)
+      }
+    }
+  }
+}
+
+// 切换排序
+const toggleSort = () => {
+  isReversed.value = !isReversed.value
+  // 重新渲染当前结果
+  const content = showTagsTab.value ? tagsTabContent.value : searchResults.value[activeTab.value]
+  
+  if (content) {
+    // 保存当前激活的URL（已存在activeEpisodeUrl.value中）
+    const currentActiveUrl = activeEpisodeUrl.value
+    
+    const $ = load(content)
+    const $results = $('.m3u8-results')
+    if ($results.length) {
+
+      // 首先清除所有项目的激活状态
+      $('.m3u8-item').removeClass('active ring-2 ring-primary-light dark:ring-primary-dark')
+        .find('.bg-active').removeClass('opacity-10').addClass('opacity-0').end()
+        .find('.ring-active').removeClass('opacity-100').addClass('opacity-0').end()
+        .find('.text-primary-light, .text-primary-dark').removeClass('text-primary-light dark:text-primary-dark').addClass('text-gray-700 dark:text-gray-200')
+
+      const items = $results.children('.m3u8-item').toArray()
+      items.reverse()
+      $results.empty()
+      items.forEach(item => $results.append(item))
+      // 更新排序按钮文本，使用更具体的选择器
+      $('button[onclick*="toggleSort"]').html(`
+        ${isReversed.value ? '切换为正序' : '切换为倒序'}
+        <span class="ml-1 opacity-60">${isReversed.value ? '↑' : '↓'}</span>
+      `)
+      
+      // 重新应用激活状态
+      if (currentActiveUrl) {
+        const $activeItem = $(`[data-url="${currentActiveUrl}"]`)
+        if ($activeItem.length) {
+          // 添加active类
+          $activeItem.addClass('active ring-2 ring-primary-light dark:ring-primary-dark')
+          
+          // 设置内部元素的样式
+          $activeItem.find('.bg-active').removeClass('opacity-0').addClass('opacity-10')
+          $activeItem.find('.ring-active').removeClass('opacity-0').addClass('opacity-100')
+          
+          // 更新文本颜色
+          const $textElement = $activeItem.find('.text-gray-700, .dark\\:text-gray-200')
+          if ($textElement.length) {
+            $textElement.removeClass('text-gray-700 dark:text-gray-200').addClass('text-primary-light dark:text-primary-dark')
+          }
+        }
+      }
+      
+      if (showTagsTab.value) {
+        tagsTabContent.value = $.html()
+      } else {
+        searchResults.value[activeTab.value] = $.html()
+      }
+    }
+  }
+}
+
+// 处理标签对话框显示
+const handleShowTagDialog = () => {
+  showTagDialog()
+}
+
+// 修改 handleGoBack 函数
+const handleGoBack = () => {
+  if (isShowingEpisodes.value && previousResults.value) {
+    searchResults.value[activeTab.value] = previousResults.value
+    isShowingEpisodes.value = false
+  }
+}
+
+// 获取所有保存的标签
+const getAllTags = (): Array<{
+  key: string;
+  seriesName: string;
+  episodeNumber: string;
+  siteName: string;
+  note: string;
+  url: string;
+  timestamp: string;
+  detailPageUrl?: string;
+  updateDays?: number[];
+}> => {
+  try {
+    const tags = JSON.parse(localStorage.getItem('video_tags') || '{}')
+    return Object.entries(tags).map(([key, value]) => ({
+      key,
+      ...(value as any)
+    }))
+  } catch (e) {
+    console.error('获取所有标签失败:', e)
+    return []
+  }
+}
+
+// 显示标签列表弹窗
+const showTagsListDialog = () => {
+  const allTags = getAllTags()
+  
+  if (allTags.length === 0) {
+    Swal.fire({
+      title: '标签列表',
+      text: '暂无保存的标签',
+      icon: 'info',
+      confirmButtonText: '确定',
+      confirmButtonColor: '#3B82F6',
+      background: isDark.value ? '#1F2937' : '#FFFFFF',
+      color: isDark.value ? '#FFFFFF' : '#000000',
+      showClass: {
+        backdrop: 'swal2-noanimation',
+        popup: 'swal2-noanimation'
+      },
+      hideClass: {
+        popup: ''
+      },
+      // 使用helper函数设置按钮样式
+      ...setupSwalButtonStyles()
+    })
+    return
+  }
+  
+  // 按时间戳排序，最新的在前面
+  allTags.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+  
+  let tagsHtml = `
+    <div class="text-left space-y-4 max-h-[60vh] overflow-y-auto pr-4 mr-[-1rem]">
+  `
+  
+  // 定义星期几的数组
+  const weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+  
+  allTags.forEach(tag => {
+    const siteName = tag.siteName || '未知站点'
+    const seriesName = tag.seriesName || '未知剧集'
+    const episodeNumber = tag.episodeNumber || '未知集数'
+    const date = new Date(tag.timestamp).toLocaleString()
+    const hasDetailUrl = !!tag.detailPageUrl
+    
+    // 转换更新日期为可读文本
+    const updateDaysText = tag.updateDays?.length 
+      ? tag.updateDays.map((i: number) => weekdays[i]).join('、')
+      : '未设置'
+    
+    tagsHtml += `
+      <div class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+        <div class="flex justify-between items-start">
+          <div class="flex-1 mr-4">
+            <div class="font-medium text-gray-900 dark:text-gray-100">${seriesName}</div>
+            <div class="text-sm text-gray-500 dark:text-gray-400">站点: ${siteName}</div>
+            <div class="text-sm text-gray-500 dark:text-gray-400">集数: ${episodeNumber}</div>
+            <div class="text-sm text-gray-500 dark:text-gray-400">更新: ${updateDaysText}</div>
+            <div class="text-xs text-gray-400 dark:text-gray-500 mt-1">保存时间: ${date}</div>
+            ${hasDetailUrl ? '<div class="text-xs text-green-500 mt-1">✓ 包含剧集列表</div>' : '<div class="text-xs text-gray-400 mt-1">✗ 无剧集列表</div>'}
+          </div>
+          <div class="flex space-x-2">
+            <button 
+              class="px-2 py-1 text-xs rounded bg-blue-500 text-white hover:bg-blue-600 active:scale-95"
+              onclick="document.dispatchEvent(new CustomEvent('applyTag', {detail: '${tag.key}'}))"
+            >
+              应用
+            </button>
+            <button 
+              class="px-2 py-1 text-xs rounded bg-gray-500 text-white hover:bg-gray-600 active:scale-95"
+              onclick="document.dispatchEvent(new CustomEvent('viewTag', {detail: '${tag.key}'}))"
+            >
+              查看
+            </button>
+            <button 
+              class="px-2 py-1 text-xs rounded bg-red-500 text-white hover:bg-red-600 active:scale-95"
+              onclick="document.dispatchEvent(new CustomEvent('deleteTag', {detail: '${tag.key}'}))"
+            >
+              删除
+            </button>
+          </div>
+        </div>
+        ${tag.note ? `<div class="mt-2 text-sm text-gray-600 dark:text-gray-300 border-t border-gray-200 dark:border-gray-700 pt-2">${tag.note}</div>` : ''}
+      </div>
+    `
+  })
+  
+  tagsHtml += `</div>`
+  
+  Swal.fire({
+    title: '标签列表',
+    html: tagsHtml,
+    showCancelButton: false,
+    confirmButtonText: '关闭',
+    confirmButtonColor: '#3B82F6',
+    background: isDark.value ? '#1F2937' : '#FFFFFF',
+    color: isDark.value ? '#FFFFFF' : '#000000',
+    width: '600px',
+    showClass: {
+      backdrop: 'swal2-noanimation',
+      popup: 'swal2-noanimation'
+    },
+    hideClass: {
+      popup: ''
+    },
+    // 使用helper函数设置按钮样式但保留自定义容器类
+    ...setupSwalButtonStyles(),
+    // 合并customClass
+    customClass: {
+      ...setupSwalButtonStyles().customClass,
+      container: 'tag-list-container'
+    }
+  })
+}
+
+// 应用标签
+const applyTag = (key: string) => {
+  try {
+    const tags = JSON.parse(localStorage.getItem('video_tags') || '{}')
+    const tag = tags[key]
+    
+    if (tag) {
+      // 保存最后应用的标签
+      localStorage.setItem('last_applied_tag', key)
+      
+      // 确保显示搜索结果区域
+      hasSearched.value = true
+      
+      // 保存标签的剧集名称作为搜索关键词
+      if (tag.seriesName) {
+        savedKeyword.value = tag.seriesName
+      }
+      
+      // 更新当前视频信息
+      currentVideoInfo.value = {
+        title: tag.seriesName || '',
+        url: tag.url || '',
+        episode: tag.episodeNumber || '',
+        siteRemark: tag.siteName || '',
+        detailPageUrl: tag.detailPageUrl || ''
+      }
+      
+      // 保存当前标签的详细信息以供后续使用
+      currentTagInfo.value = { ...tag, key }
+      
+      // 切换到标签页
+      showTagsTab.value = true
+      
+      // 关闭标签列表弹窗
+      Swal.close()
+      
+      // 如果有剧集列表URL，先加载剧集列表
+      if (tag.detailPageUrl) {
+        // 在标签页中显示加载状态，而不是使用弹窗
+        tagsTabContent.value = `
+          <div class="flex flex-col items-center justify-center py-8 space-y-4">
+            <div class="w-8 h-8 border-4 border-primary-light dark:border-primary-dark border-t-transparent rounded-full animate-spin"></div>
+            <div class="text-gray-500 dark:text-gray-400">
+              正在加载剧集列表...
+            </div>
+          </div>
+        `
+        
+        // 根据环境选择正确的 API 端点
+        const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+          ? '/api/search' 
+          : '/functions/api/search'
+        
+        // 加载剧集列表
+        fetch(apiEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ url: tag.detailPageUrl })
+        }).then(async response => {
+          if (!response.ok) {
+            throw new Error(`请求失败: ${response.status}`)
+          }
+          
+          const html = await response.text()
+          const $ = load(html)
+          
+          // 生成剧集列表HTML
+          let resultHtml = `
+            <div class="space-y-4">
+              <div class="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2 text-center">
+                ${tag.seriesName || '未知剧集'}
+              </div>
+              <div class="flex justify-between items-center">
+                <div class="text-sm text-gray-500 dark:text-gray-400">${tag.siteName || '未知站点'}</div>
+                <div class="flex items-center gap-2">
+                  <button 
+                    class="px-4 py-2 text-sm rounded-lg bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 hover:border-primary-light dark:hover:border-primary-dark shadow-sm hover:shadow font-medium"
+                    onclick="document.dispatchEvent(new CustomEvent('showTagDialog'))"
+                  >
+                    ${getTagButtonContent(tag.siteName, tag.seriesName)}
+                  </button>
+                  <button 
+                    class="px-4 py-2 text-sm rounded-lg bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 hover:border-primary-light dark:hover:border-primary-dark shadow-sm hover:shadow font-medium"
+                    onclick="document.dispatchEvent(new CustomEvent('toggleSort'))"
+                  >
+                    ${isReversed.value ? '切换为正序' : '切换为倒序'}
+                    <span class="ml-1 opacity-60">${isReversed.value ? '↑' : '↓'}</span>
+                  </button>
+                </div>
+              </div>
+              <div class="m3u8-results flex flex-wrap gap-3">
+          `
+          
+          // 查找m3u8链接
+          const playLinks = $('span, a').filter(function(this: any) {
+            const $el = $(this)
+            const text = $el.text().trim()
+            return text.toLowerCase().includes('.m3u8')
+          })
+          
+          // 使用 Map 来存储链接，以 URL 为键，确保去重
+          const linksMap = new Map<string, { title: string; url: string }>()
+          let autoNumberIndex = 1
+          
+          playLinks.each((_, link) => {
+            const $link = $(link)
+            const text = $link.text().trim()
+            
+            // 处理包含$分隔符的情况
+            const parts = text.split('$')
+            if (parts.length >= 2) {
+              const title = parts[0].trim()
+              const videoUrl = parts[1].trim()
+              
+              if (videoUrl.toLowerCase().includes('.m3u8')) {
+                const finalTitle = !title ? String(autoNumberIndex++) : title
+                if (!linksMap.has(videoUrl)) {
+                  linksMap.set(videoUrl, { title: finalTitle, url: videoUrl })
+                }
+              }
+            }
+          })
+          
+          // 转换为数组
+          let links = Array.from(linksMap.values())
+          
+          // 根据排序状态排序
+          if (isReversed.value) {
+            links.reverse()
+          }
+          
+          // 生成HTML
+          links.forEach(({ title, url }) => {
+            // 检查当前URL是否与当前激活的剧集URL匹配
+            const isCurrentVideo = url === activeEpisodeUrl.value || url === tag.url
+            resultHtml += `
+              <div class="m3u8-item group relative bg-white dark:bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 shadow-sm hover:shadow-md dark:shadow-gray-900/10 border border-gray-100 dark:border-gray-700 ${isCurrentVideo ? 'ring-2 ring-primary-light dark:ring-primary-dark active' : ''}"
+                   data-url="${url}"
+              >
+                <div class="p-3 text-sm font-medium ${isCurrentVideo ? 'text-primary-light dark:text-primary-dark' : 'text-gray-700 dark:text-gray-200'} text-center group-hover:text-primary-light dark:group-hover:text-primary-dark line-clamp-2 break-words" title="${title}">
+                  ${title}
+                </div>
+                <div class="absolute inset-0 rounded-lg ring-1 ring-inset ring-gray-200 dark:ring-gray-700 group-hover:ring-primary-light/20 dark:group-hover:ring-primary-dark/20"></div>
+                <div class="absolute inset-0 rounded-lg bg-primary-light dark:bg-primary-dark ${isCurrentVideo ? 'opacity-10' : 'opacity-0'} group-hover:opacity-10 transition-opacity duration-200 bg-active"></div>
+                <div class="absolute inset-0 rounded-lg ring-2 ring-primary-light dark:ring-primary-dark ring-offset-2 ring-offset-white dark:ring-offset-gray-800 ${isCurrentVideo ? 'opacity-100' : 'opacity-0'} group-hover:opacity-100 transition-opacity duration-200 ring-active"></div>
+              </div>
+            `
+          })
+          
+          resultHtml += '</div></div>'
+          
+          // 设置标签页内容
+          tagsTabContent.value = resultHtml
+          
+          // 如果有播放URL，触发播放
+          if (tag.url) {
+            // 添加提示
+            const message = document.createElement('div')
+            message.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded shadow-lg'
+            message.textContent = '已应用标签'
+            document.body.appendChild(message)
+            setTimeout(() => message.remove(), 2000)
+          }
+        }).catch(error => {
+          console.error('加载剧集列表失败:', error)
+          // 在标签页中显示错误信息
+          tagsTabContent.value = `
+            <div class="error-message p-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-100 dark:border-red-900/30">
+              <p class="font-medium">加载剧集列表失败:</p>
+              <p class="mt-1">${error instanceof Error ? error.message : '未知错误'}</p>
+              <p class="mt-2 text-sm">请检查网络连接或稍后重试</p>
+            </div>
+          `
+        })
+      } else if (tag.url) {
+        // 如果没有剧集列表URL，直接显示单个视频
+        tagsTabContent.value = `
+          <div class="space-y-4">
+            <div class="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2 text-center">
+              ${tag.seriesName || '未知剧集'}
+            </div>
+            <div class="flex justify-between items-center">
+              <div class="text-sm text-gray-500 dark:text-gray-400">${tag.siteName || '未知站点'}</div>
+              <div class="flex items-center gap-2">
+                <button 
+                  class="px-4 py-2 text-sm rounded-lg bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 hover:border-primary-light dark:hover:border-primary-dark shadow-sm hover:shadow font-medium"
+                  onclick="document.dispatchEvent(new CustomEvent('showTagDialog'))"
+                >
+                  ${getTagButtonContent(tag.siteName, tag.seriesName)}
+                </button>
+              </div>
+            </div>
+            <div class="m3u8-results flex flex-wrap gap-3">
+              <div class="m3u8-item group relative bg-white dark:bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 shadow-sm hover:shadow-md dark:shadow-gray-900/10 border border-gray-100 dark:border-gray-700 ring-2 ring-primary-light dark:ring-primary-dark active"
+                   data-url="${tag.url}"
+              >
+                <div class="p-3 text-sm font-medium text-primary-light dark:text-primary-dark text-center group-hover:text-primary-light dark:group-hover:text-primary-dark line-clamp-2 break-words" title="${tag.episodeNumber || '未知集数'}">
+                  ${tag.episodeNumber || '未知集数'}
+                </div>
+                <div class="absolute inset-0 rounded-lg ring-1 ring-inset ring-gray-200 dark:ring-gray-700 group-hover:ring-primary-light/20 dark:group-hover:ring-primary-dark/20"></div>
+                <div class="absolute inset-0 rounded-lg bg-primary-light dark:bg-primary-dark opacity-10 group-hover:opacity-10 transition-opacity duration-200 bg-active"></div>
+                <div class="absolute inset-0 rounded-lg ring-2 ring-primary-light dark:ring-primary-dark ring-offset-2 ring-offset-white dark:ring-offset-gray-800 opacity-100 group-hover:opacity-100 transition-opacity duration-200 ring-active"></div>
+              </div>
+            </div>
+          </div>
+        `
+        
+        // 添加提示
+        const message = document.createElement('div')
+        message.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded shadow-lg'
+        message.textContent = '已应用标签'
+        document.body.appendChild(message)
+        setTimeout(() => message.remove(), 2000)
+      }
+    }
+  } catch (e) {
+    console.error('应用标签失败:', e)
+    
+    // 显示错误提示在标签页中
+    tagsTabContent.value = `
+      <div class="error-message p-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-100 dark:border-red-900/30">
+        <p class="font-medium">应用标签失败:</p>
+        <p class="mt-1">${e instanceof Error ? e.message : '未知错误'}</p>
+        <p class="mt-2 text-sm">请检查网络连接或稍后重试</p>
+      </div>
+    `
+  }
+}
+
+// 查看标签详情
+const viewTag = (key: string) => {
+  try {
+    const tags = JSON.parse(localStorage.getItem('video_tags') || '{}')
+    const tag = tags[key]
+    
+    if (tag) {
+      const weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+      const updateDaysText = tag.updateDays?.length 
+        ? tag.updateDays.map((i: number) => weekdays[i]).join('、')
+        : '未设置'
+      
+      Swal.fire({
+        title: '标签详情',
+        html: `
+          <div class="text-left space-y-2">
+            <div class="mb-1">
+              <div class="flex items-center justify-between">
+                <div class="text-xs font-medium text-gray-500 dark:text-gray-400">剧集名称</div>
+                <button 
+                  class="px-1.5 py-0.5 text-xs rounded bg-blue-500 text-white hover:bg-blue-600 active:bg-blue-700 flex items-center gap-1"
+                  onclick="navigator.clipboard.writeText('${tag.seriesName || ''}').then(() => { 
+                    const btn = document.getElementById('copy-series-btn');
+                    if (btn) {
+                      btn.innerHTML = '<svg class=\\'w-4 h-4\\' viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'1.5\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' d=\\'M4.5 12.75l6 6 9-13.5\\' /></svg>';
+                      setTimeout(() => { btn.innerHTML = '<svg class=\\'w-4 h-4\\' viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'1.5\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' d=\\'M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184\\' /></svg>'; }, 1500);
+                    }
+                  })"
+                  id="copy-series-btn"
+                ><svg class='w-4 h-4' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'><path stroke-linecap='round' stroke-linejoin='round' d='M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184' /></svg></button>
+              </div>
+              <div class="mt-0.5 p-1.5 text-sm rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100">${tag.seriesName || '未知'}</div>
+            </div>
+            <div class="mb-1">
+              <div class="text-xs font-medium text-gray-500 dark:text-gray-400">追更集数</div>
+              <div class="mt-0.5 p-1.5 text-sm rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100">${tag.episodeNumber || '未知'}</div>
+            </div>
+            <div class="mb-1">
+              <div class="text-xs font-medium text-gray-500 dark:text-gray-400">资源站点</div>
+              <div class="mt-0.5 p-1.5 text-sm rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100">${tag.siteName || '未知'}</div>
+            </div>
+            <div class="mb-1">
+              <div class="text-xs font-medium text-gray-500 dark:text-gray-400">更新日期</div>
+              <div class="mt-0.5 p-1.5 text-sm rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100">${updateDaysText}</div>
+            </div>
+            <div class="mb-1">
+              <div class="flex items-center justify-between">
+                <div class="text-xs font-medium text-gray-500 dark:text-gray-400">剧集列表URL</div>
+                <button 
+                  class="px-1.5 py-0.5 text-xs rounded bg-blue-500 text-white hover:bg-blue-600 active:bg-blue-700 flex items-center gap-1"
+                  onclick="navigator.clipboard.writeText('${tag.detailPageUrl || ''}').then(() => { 
+                    const btn = document.getElementById('copy-detail-btn');
+                    if (btn) {
+                      btn.innerHTML = '<svg class=\\'w-4 h-4\\' viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'1.5\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' d=\\'M4.5 12.75l6 6 9-13.5\\' /></svg>';
+                      setTimeout(() => { btn.innerHTML = '<svg class=\\'w-4 h-4\\' viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'1.5\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' d=\\'M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184\\' /></svg>'; }, 1500);
+                    }
+                  })"
+                  id="copy-detail-btn"
+                ><svg class='w-4 h-4' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.5'><path stroke-linecap='round' stroke-linejoin='round' d='M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184' /></svg></button>
+              </div>
+              <div class="mt-0.5 p-1.5 text-xs rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100 break-all overflow-x-auto">${tag.detailPageUrl || '未知'}</div>
+            </div>
+            <div class="mb-1">
+              <div class="text-xs font-medium text-gray-500 dark:text-gray-400">标签备注</div>
+              <div class="mt-0.5 p-1.5 text-sm rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100 min-h-[40px] max-h-[80px] overflow-y-auto">${tag.note || '无备注'}</div>
+            </div>
+            <div class="mb-1">
+              <div class="text-xs font-medium text-gray-500 dark:text-gray-400">保存时间</div>
+              <div class="mt-0.5 p-1.5 text-sm rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-gray-100">${new Date(tag.timestamp).toLocaleString()}</div>
+            </div>
+          </div>
+        `,
+        confirmButtonText: '关闭',
+        confirmButtonColor: '#3B82F6',
+        background: isDark.value ? '#1F2937' : '#FFFFFF',
+        color: isDark.value ? '#FFFFFF' : '#000000',
+        width: '450px',
+        showClass: {
+          backdrop: 'swal2-noanimation',
+          popup: 'swal2-noanimation'
+        },
+        hideClass: {
+          popup: ''
+        },
+        // 合并所有自定义类设置并添加额外的样式
+        ...setupSwalButtonStyles(),
+        customClass: {
+          ...setupSwalButtonStyles().customClass,
+          title: 'text-base',
+          htmlContainer: 'text-sm'
+        },
+        didClose: () => {
+          // 重新显示标签列表
+          showTagsListDialog()
+        }
+      })
+    }
+  } catch (e) {
+    console.error('查看标签详情失败:', e)
+  }
+}
+
+// 删除标签
+const deleteTag = (key: string) => {
+  try {
+    Swal.fire({
+      title: '确认删除',
+      text: '确定要删除这个标签吗？此操作不可撤销。',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      confirmButtonColor: '#EF4444',
+      cancelButtonColor: '#6B7280',
+      background: isDark.value ? '#1F2937' : '#FFFFFF',
+      color: isDark.value ? '#FFFFFF' : '#000000',
+      showClass: {
+        backdrop: 'swal2-noanimation',
+        popup: 'swal2-noanimation'
+      },
+      hideClass: {
+        popup: ''
+      },
+      ...setupSwalButtonStyles()
+    }).then((result) => {
+      if (result.isConfirmed) {
+        const tags = JSON.parse(localStorage.getItem('video_tags') || '{}')
+        if (tags[key]) {
+          delete tags[key]
+          localStorage.setItem('video_tags', JSON.stringify(tags))
+        }
+      }
+
+      showTagsListDialog()
+    })
+  } catch (e) {
+    console.error('删除标签失败:', e)
+  }
+}
+
+// 处理应用标签事件
+const handleApplyTag = (event: CustomEvent) => {
+  const key = event.detail
+  if (key) {
+    applyTag(key)
+  }
+}
+
+// 处理查看标签事件
+const handleViewTag = (event: CustomEvent) => {
+  const key = event.detail
+  if (key) {
+    viewTag(key)
+  }
+}
+
+// 处理删除标签事件
+const handleDeleteTag = (event: CustomEvent) => {
+  const key = event.detail
+  if (key) {
+    deleteTag(key)
+  }
+}
+
+// 暴露搜索方法和标签列表方法给父组件
+defineExpose({
+  performSearch,
+  showTagsListDialog
+})
+
+// 处理右键菜单显示
+const handleContextMenu = (event: MouseEvent) => {
+  // 阻止默认右键菜单
+  event.preventDefault()
+  
+  // 获取被点击的剧集元素
+  const target = event.target as HTMLElement
+  const clickedItem = target.closest('.m3u8-item') as HTMLElement
+  
+  if (clickedItem) {
+    // 获取剧集信息
+    const url = clickedItem.getAttribute('data-url') || ''
+    
+    // 获取剧集标题文本
+    const titleElement = clickedItem.querySelector('.text-center, .text-primary-light, .text-primary-dark, [class*="text-primary"], [class*="text-center"]')
+    const title = titleElement?.textContent?.trim() || ''
+    
+    // 设置右键菜单位置和内容
+    contextMenu.value = {
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      episodeUrl: url,
+      episodeTitle: title,
+      episodeIndex: title
+    }
+    
+    // 添加一次性事件监听器，点击其他区域关闭菜单
+    setTimeout(() => {
+      document.addEventListener('click', closeContextMenu, { once: true })
+    }, 0)
+  }
+}
+
+// 关闭右键菜单
+const closeContextMenu = () => {
+  contextMenu.value.visible = false
+}
+
+// 处理"保存为标签"选项点击
+const handleSaveAsTag = () => {
+  // 关闭右键菜单
+  closeContextMenu()
+  
+  // 获取当前资源站点
+  let currentSite = '';
+
+  // 获取剧集名称
+  let seriesName = ''
+
+  // 获取剧集列表URL
+  let detailPageUrl = ''
+  
+  if (showTagsTab.value && currentVideoInfo.value.siteRemark) {
+    // 如果是标签页模式，直接使用当前视频信息中保存的站点备注
+    currentSite = currentVideoInfo.value.siteRemark;
+
+    // 如果是标签页模式，直接使用当前标签信息中保存的剧集名称
+    seriesName = currentTagInfo.value?.seriesName || ''
+
+    // 如果是标签页模式，直接使用当前标签信息中保存的剧集列表URL
+    detailPageUrl = currentTagInfo.value?.detailPageUrl || ''
+
+  } else {
+    // 否则使用正常的逻辑
+    currentSite = props.sites.filter(s => s.active)[activeTab.value]?.remark || '';
+    seriesName = savedKeyword.value || props.keyword || ''
+    detailPageUrl = currentVideoInfo.value.detailPageUrl || ''
+  }
+  
+  // 获取剧集集数
+  let episodeNumber = contextMenu.value.episodeIndex || ''
+  
+  // 获取剧集URL
+  let episodeUrl = contextMenu.value.episodeUrl || ''
+  
+  // 获取当前标签信息
+  const tagInfo = getTagInfo(currentSite, seriesName)
+  
+  // 使用已有的更新日期，如果没有则默认为空数组
+  const updateDays = tagInfo?.updateDays || []
+  
+  // 使用已有的备注，如果没有则默认为空字符串
+  const note = tagInfo?.note || ''
+
+  detailPageUrl = tagInfo?.detailPageUrl || detailPageUrl
+  
+  // 直接保存标签，不显示弹窗
+  saveTag(currentSite, seriesName, episodeNumber, detailPageUrl, note, updateDays)
+  
+  // 更新当前激活的剧集URL(如果右键点击的是剧集)
+  if (episodeUrl && episodeUrl.toLowerCase().includes('.m3u8')) {
+    activeEpisodeUrl.value = episodeUrl
+  }
+  
+  // 更新当前标签页的信息和按钮样式
+  if (showTagsTab.value) {
+    // 更新当前标签信息
+    currentTagInfo.value = {
+      note,
+      seriesName,
+      episodeNumber,
+      siteName: currentSite,
+      detailPageUrl,
+      updateDays,
+      timestamp: new Date().toISOString()
+    }
+    
+    // 如果在标签页中，更新标签页内容中的标签按钮
+    if (tagsTabContent.value) {
+      const $ = load(tagsTabContent.value)
+      const $tagButton = $('button[onclick*="showTagDialog"]')
+      if ($tagButton.length) {
+        $tagButton.html(getTagButtonContent(currentSite, seriesName))
+        tagsTabContent.value = $.html()
+      }
+    }
+  } else {
+    // 如果在搜索结果页中，更新当前标签页的按钮样式
+    if (searchResults.value[activeTab.value]) {
+      const $ = load(searchResults.value[activeTab.value])
+      const $tagButton = $('button[onclick*="showTagDialog"]')
+      if ($tagButton.length) {
+        $tagButton.html(getTagButtonContent(currentSite, seriesName))
+        searchResults.value[activeTab.value] = $.html()
+      }
+    }
+  }
+  
+  // 显示成功提示
+  const message = document.createElement('div')
+  message.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded shadow-lg z-50'
+  message.textContent = '标签保存成功'
+  document.body.appendChild(message)
+  setTimeout(() => message.remove(), 2000)
+}
+
+// 添加事件监听
+onMounted(() => {  
+  // 添加事件监听
+  document.addEventListener('toggleSort', toggleSort)
+  document.addEventListener('goBack', handleGoBack)
+  document.addEventListener('showTagDialog', handleShowTagDialog)
+  document.addEventListener('applyTag', handleApplyTag as EventListener)
+  document.addEventListener('viewTag', handleViewTag as EventListener)
+  document.addEventListener('deleteTag', handleDeleteTag as EventListener)
+  
+  // 添加鼠标右键事件委托
+  document.addEventListener('click', (e) => {
+    // 如果点击的不是右键菜单内部元素，则关闭菜单
+    if (contextMenu.value.visible) {
+      const target = e.target as HTMLElement
+      if (!target.closest('.context-menu')) {
+        closeContextMenu()
+      }
+    }
+  })
+})
+
+onUnmounted(() => {
+  document.removeEventListener('toggleSort', toggleSort)
+  document.removeEventListener('goBack', handleGoBack)
+  document.removeEventListener('showTagDialog', handleShowTagDialog)
+  document.removeEventListener('applyTag', handleApplyTag as EventListener)
+  document.removeEventListener('viewTag', handleViewTag as EventListener)
+  document.removeEventListener('deleteTag', handleDeleteTag as EventListener)
+})
+</script>
+
+<template>
+  <div class="w-full">
+    <!-- 标签页 -->
+    <div class="border-b border-gray-200 dark:border-gray-700">
+      <nav class="-mb-px flex space-x-4 overflow-x-auto" aria-label="Tabs">
+        <!-- 标签页放在第一位 -->
+        <button
+          @click="showTagsTab = true"
+          :class="[
+            showTagsTab
+              ? 'border-primary-light dark:border-primary-dark text-primary-light dark:text-primary-dark'
+              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600',
+            'whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm'
+          ]"
+        >
+          标签
+        </button>
+        <button
+          v-for="(site, index) in sites.filter(s => s.active)"
+          :key="index"
+          @click="activeTab = index; showTagsTab = false"
+          :class="[
+            activeTab === index && !showTagsTab
+              ? 'border-primary-light dark:border-primary-dark text-primary-light dark:text-primary-dark'
+              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600',
+            'whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm'
+          ]"
+        >
+          {{ site.remark }}
+        </button>
+      </nav>
+    </div>
+
+    <!-- 搜索结果 -->
+    <div class="mt-4">
+      <template v-if="hasSearched">
+        <!-- 标签页内容 -->
+        <div v-if="showTagsTab" class="space-y-4">
+          <div 
+            ref="searchResultsContainer"
+            class="search-results-container"
+            @click="handleContainerClick"
+            @contextmenu="handleContextMenu"
+          >
+            <div v-if="tagsTabContent" v-html="tagsTabContent"></div>
+            <div v-else class="text-center py-8 text-gray-500 dark:text-gray-400">
+              暂无标签内容，请在标签列表应用标签
+            </div>
+          </div>
+        </div>
+        <!-- 原有的搜索结果内容 -->
+        <div v-else>
+          <div v-for="(site, index) in sites.filter(s => s.active)" 
+               :key="index"
+               v-show="activeTab === index" 
+               class="space-y-4"
+          >
+            <div 
+              ref="searchResultsContainer"
+              class="search-results-container"
+              @click="handleContainerClick"
+              @contextmenu="handleContextMenu"
+            >
+              <!-- 加载状态 -->
+              <div 
+                v-if="isLoading[index]"
+                class="flex flex-col items-center justify-center py-8 space-y-4"
+              >
+                <div class="w-8 h-8 border-4 border-primary-light dark:border-primary-dark border-t-transparent rounded-full animate-spin"></div>
+                <div class="text-gray-500 dark:text-gray-400">
+                  <template v-if="isProxySearching[index]">
+                    代理搜索进行中...
+                  </template>
+                  <template v-else>
+                    进行中...
+                  </template>
+                </div>
+              </div>
+              <!-- 搜索结果 -->
+              <div v-else>
+                <div v-if="searchResults[index]" v-html="searchResults[index]"></div>
+                <div v-else class="text-center py-8 text-gray-500 dark:text-gray-400">
+                  未找到搜索结果
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+      
+      <!-- 未搜索时的提示 -->
+      <div v-if="!hasSearched" class="text-center py-8 text-gray-500 dark:text-gray-400">
+        请输入关键词进行搜索
+      </div>
+    </div>
+    
+    <!-- 右键菜单 -->
+    <div 
+      v-if="contextMenu.visible" 
+      class="context-menu fixed z-50 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 shadow-lg rounded-lg"
+      :style="{
+        left: `${contextMenu.x}px`,
+        top: `${contextMenu.y}px`,
+      }"
+    >
+      <div 
+        class="tag-save-btn px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-gray-700 dark:text-gray-200 transition-colors rounded relative"
+        @click="handleSaveAsTag"
+      >
+        <div class="flex items-center gap-2">
+          <BookmarkIcon class="w-5 h-5" />
+          <span>保存为标签</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+iframe {
+  background-color: white;
+}
+
+:deep(.dark) iframe {
+  background-color: #1f2937;
+}
+
+.search-results-container {
+  @apply p-2;
+}
+
+.search-results-container :deep(.search-results) {
+  @apply space-y-2;
+}
+
+.search-results-container :deep(.result-item:hover) {
+  @apply transform scale-[1.01];
+}
+
+.search-results-container :deep(.no-results) {
+  @apply text-center py-8 text-gray-500 dark:text-gray-400;
+}
+
+.search-results-container :deep(.error-message) {
+  @apply text-center;
+}
+
+/* 右键菜单样式 */
+.context-menu {
+  min-width: 160px;
+  animation: fadeIn 0.1s ease-out;
+  transform-origin: top left;
+}
+
+.tag-save-btn {
+  position: relative;
+  transition: all 0.1s ease;
+  border-radius: 0.5rem;
+}
+
+.tag-save-btn::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  border-radius: 0.5rem;
+  border: 0 solid #5b99fc;
+  transition: all 0.1s ease;
+  pointer-events: none;
+}
+
+.tag-save-btn:hover::before {
+  border-width: 2px;
+}
+
+/* 移除之前的悬停样式 */
+.tag-save-btn:hover {
+  z-index: 1;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 修改SweetAlert2按钮的聚焦样式 */
+:deep(.swal2-confirm:focus),
+:deep(.swal2-cancel:focus),
+:deep(.swal2-deny:focus),
+:deep(.swal2-button:focus) {
+  box-shadow: none !important;
+  outline: none !important;
+  border-color: transparent !important;
+}
+
+/* 全局覆盖SweetAlert2按钮样式 */
+:global(.swal2-actions button:focus) {
+  box-shadow: none !important;
+  outline: none !important;
+  border-color: transparent !important;
+}
+
+/* 使用v-deep替代方案 */
+:deep(.swal2-popup .swal2-actions button:focus-visible) {
+  box-shadow: none !important;
+  outline: none !important;
+  border: none !important;
+}
+
+/* 使用更高优先级的选择器 */
+:deep(.swal2-container) .swal2-popup .swal2-actions button:focus {
+  box-shadow: none !important;
+  outline: none !important;
+  border: none !important;
+}
+
+/* 添加全局样式覆盖SweetAlert2默认样式 */
+:global(.swal2-actions button:focus),
+:global(.swal2-actions button:focus-visible) {
+  outline: 0 !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
+:global(.swal2-button-no-focus:focus),
+:global(.swal2-button-no-focus:focus-visible) {
+  outline: 0 !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+</style> 
