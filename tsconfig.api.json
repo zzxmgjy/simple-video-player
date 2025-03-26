@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "allowJs": true,
+    "declaration": true,
+    "isolatedModules": true
+  },
+  "include": ["src/api/**/*.ts", "src/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
