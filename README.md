@@ -69,9 +69,9 @@ dist
 
 3. 配置环境变量
 #### 基础变量
-ADMIN_PASSWORD
+ADMIN_PASSWORD（管理后台密码）
 
-LOGIN_JWT_SECRET_KEY
+LOGIN_JWT_SECRET_KEY（任意随机字符串，用于加密jwt，jwt用于保持登录状态，时间为24小时）
 
 #### 数据库-pgsql url（比如 supabase的）
 ##### 格式：postgresql://postgres:...
@@ -102,9 +102,9 @@ npm install
 
 3. 配置环境变量
 #### 基础变量
-ADMIN_PASSWORD
+ADMIN_PASSWORD（管理后台密码）
 
-LOGIN_JWT_SECRET_KEY
+LOGIN_JWT_SECRET_KEY（任意随机字符串，用于加密jwt，jwt用于保持登录状态，时间为24小时）
 
 #### 数据库-pgsql url（比如 supabase的、neon的）
 ##### 格式：postgresql://postgres:...
@@ -127,7 +127,9 @@ SQL_DSN
 - 首页名称
 - 公告
 
-注意-修改配置后的保存：点击页面底部的保存设置按钮才能够真的保存
+```
+注意-管理后台修改配置后的保存：点击页面底部的保存设置按钮才能够真的保存
+```
 
 ## 许可证
 
