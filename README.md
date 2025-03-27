@@ -72,6 +72,7 @@ ADMIN_PASSWORD
 LOGIN_JWT_SECRET_KEY
 
 #### 数据库-pgsql url（比如 supabase的）
+##### 格式：postgresql://postgres:...
 PG_CONNECTION_STRING
 
 #### 数据库-KV
@@ -104,6 +105,7 @@ ADMIN_PASSWORD
 LOGIN_JWT_SECRET_KEY
 
 #### 数据库-pgsql url（比如 supabase的、neon的）
+##### 格式：postgresql://postgres:...
 PG_CONNECTION_STRING
 
 #### 数据库-SQL-DSN（比如 aiven的）
