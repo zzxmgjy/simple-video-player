@@ -301,7 +301,7 @@ const handleShowTags = () => {
               <VideoPlayer
                 v-if="videoUrl"
                 :url="videoUrl"
-                :parse-api="config?.parseApi"
+                :parse-api="config?.parseApi || ''"
                 :refresh-trigger="refreshTrigger"
                 ref="videoPlayer"
                 class="relative z-10 w-full h-full"
@@ -495,9 +495,18 @@ nav[aria-label="Tabs"]::-webkit-scrollbar-track {
 .search-results-container {
   scrollbar-width: none;
   -ms-overflow-style: none;
+  max-height: calc(100vh - 200px); /* 限制最大高度 */
+  overflow-y: auto; /* 启用垂直滚动 */
 }
 
 .search-results-container::-webkit-scrollbar {
   display: none;
+}
+
+/* 在移动设备上使用不同的最大高度 */
+@media (max-width: 1023px) {
+  .search-results-container {
+    max-height: calc(50vh - 130px); /* 移动设备上右侧面板高度是50%，所以调整最大高度 */
+  }
 }
 </style>
