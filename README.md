@@ -4,7 +4,7 @@
 
 毫无技术含量，只是简单的组合，cursor搭建~
 
-## 本工具仅供学习使用，请勿用于非法用途！
+# 本工具仅供学习使用，请勿用于非法用途！
 
 
 ## 功能特点
@@ -108,6 +108,7 @@ LOGIN_JWT_SECRET_KEY（任意随机字符串，用于加密jwt，jwt用于保持
 
 #### 数据库-pgsql url（比如 supabase的、neon的）
 ##### 格式：postgresql://postgres:...
+###### 如果是 supabase的，那么这个链接是 Transaction pooler 的
 PG_CONNECTION_STRING
 
 #### 数据库-SQL-DSN（比如 aiven的）
@@ -115,6 +116,11 @@ PG_CONNECTION_STRING
 SQL_DSN
 
 小结-部署vercel需要配置基础变量和数据库变量
+
+### VPS 部署
+```
+注意：需要在 .env 添加 VITE_VPS_ENDPOINT_FLAG=true
+```
 
 ## 管理后台配置
 
