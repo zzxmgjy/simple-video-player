@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host 0.0.0.0",
     "dev:worker": "npx wrangler pages dev dist --port 8787",
     "build": "vite build",
     "build:ts": "vue-tsc && vite build",
