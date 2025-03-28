@@ -268,6 +268,39 @@ const initStatusMonitor = () => {
       document.body.classList.remove('web-fullscreen')
     }
   })
+
+  // 监听原生全屏
+  // @ts-ignore
+  player.on('fullscreen', () => {
+
+    const isMobile = !!navigator.userAgent.match(/AppleWebKit.*Mobile.*/);
+
+    if (isMobile) {
+      try {
+        screen.orientation.lock('landscape').catch(err => {
+          console.warn('无法锁定屏幕方向:', err.message);
+          player.notice('当前浏览器不支持自动横屏', 3000, 0.5)
+        });
+      } catch (error) {
+        console.warn('屏幕方向锁定不受支持:', error);
+      }
+    }
+  })
+
+  // 监听原生退出全屏
+  // @ts-ignore
+  player.on('fullscreen_cancel', () => {  
+
+    const isMobile = !!navigator.userAgent.match(/AppleWebKit.*Mobile.*/);
+
+    if (isMobile) {
+      try {
+        screen.orientation.unlock();
+      } catch (error) {
+        console.warn('解除屏幕方向锁定不受支持:', error);
+      }
+    }
+  })
 }
 
 // 检测视频格式
