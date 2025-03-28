@@ -623,7 +623,7 @@ const searchSite = async (site: ResourceSite, index: number) => {
 
     // 根据环境选择正确的 API 端点
     // 本地开发环境使用 /api/search, Cloudflare/Vercel 环境使用 /functions/api/search
-    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || true 
       ? '/api/search' 
       : '/functions/api/search'
 
@@ -895,7 +895,7 @@ const handleResultClick = async (url: string, customKeyword?: string) => {
     }
 
     // 根据环境选择正确的 API 端点
-    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || true 
       ? '/api/search' 
       : '/functions/api/search'
     
@@ -1429,7 +1429,7 @@ const applyTag = (key: string) => {
         `
         
         // 根据环境选择正确的 API 端点
-        const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+        const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || true 
           ? '/api/search' 
           : '/functions/api/search'
         
