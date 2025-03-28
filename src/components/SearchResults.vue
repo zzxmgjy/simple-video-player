@@ -1777,10 +1777,20 @@ const handleDeleteTag = (event: CustomEvent) => {
   }
 }
 
+// 添加一个新方法用于在搜索时切换标签
+const switchToFirstNonTagTab = () => {
+  // 如果当前是标签页，切换到第一个非标签页
+  if (showTagsTab.value) {
+    showTagsTab.value = false
+    activeTab.value = 0
+  }
+}
+
 // 暴露搜索方法和标签列表方法给父组件
 defineExpose({
   performSearch,
-  showTagsListDialog
+  showTagsListDialog,
+  switchToFirstNonTagTab
 })
 
 // 处理右键菜单显示
