@@ -65,6 +65,8 @@ const contextMenu = ref<{
   episodeIndex: ''
 })
 
+let vpsEndpointFlag = import.meta.env.VITE_VPS_ENDPOINT_FLAG || false
+
 // 创建一个Helper函数来处理SweetAlert2样式问题
 const setupSwalButtonStyles = () => {
   // 全局添加一次样式就足够了
@@ -623,7 +625,7 @@ const searchSite = async (site: ResourceSite, index: number) => {
 
     // 根据环境选择正确的 API 端点
     // 本地开发环境使用 /api/search, Cloudflare/Vercel 环境使用 /functions/api/search
-    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || true 
+    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || vpsEndpointFlag 
       ? '/api/search' 
       : '/functions/api/search'
 
@@ -895,7 +897,7 @@ const handleResultClick = async (url: string, customKeyword?: string) => {
     }
 
     // 根据环境选择正确的 API 端点
-    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || true 
+    const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || vpsEndpointFlag 
       ? '/api/search' 
       : '/functions/api/search'
     
@@ -1429,7 +1431,7 @@ const applyTag = (key: string) => {
         `
         
         // 根据环境选择正确的 API 端点
-        const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || true 
+        const apiEndpoint = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || vpsEndpointFlag 
           ? '/api/search' 
           : '/functions/api/search'
         
