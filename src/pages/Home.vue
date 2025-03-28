@@ -125,7 +125,14 @@ const handlePlay = () => {
 
 const handleSearch = () => {
   searchKeyword.value = searchKeyword.value?.trim() || ''
-  searchResults.value?.performSearch()
+  
+  // 如果SearchResults组件存在
+  if (searchResults.value) {
+    // 执行切换到第一个非标签标签页的操作
+    searchResults.value?.switchToFirstNonTagTab()
+    // 执行搜索
+    searchResults.value?.performSearch()
+  }
 }
 
 const handleLogin = async () => {
