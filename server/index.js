@@ -142,8 +142,7 @@ const checkAdmin = (req, res, next) => {
 // 获取公开配置（不包含密码）
 app.get('/api/config', checkAuth, async (req, res) => {
   try {
-    const dsn = process.env.SQL_DSN?.replace(/^'|'$/g, '')
-    const config = await getPublicConfig(dsn)
+    const config = await getPublicConfig()
     res.json(config)
   } catch (error) {
     //console.error('获取配置失败:', error)
@@ -166,9 +165,8 @@ app.post('/api/auth/verify', async (req, res) => {
       // 管理后台验证
       isValid = password === process.env.ADMIN_PASSWORD
     } else {
-      // 普通用户验证
-      const dsn = process.env.SQL_DSN?.replace(/^'|'$/g, '')
-      isValid = await verifyPassword(password, dsn)
+      // 普通用户验证，不需要传入dsn参数
+      isValid = await verifyPassword(password)
     }
     
     if (isValid) {
@@ -197,8 +195,7 @@ app.post('/api/auth/verify', async (req, res) => {
 // 获取完整配置（需要管理员权限）
 app.get('/api/admin/config', checkAuth, checkAdmin, async (req, res) => {
   try {
-    const dsn = process.env.SQL_DSN?.replace(/^'|'$/g, '')
-    const config = await getConfig(dsn)
+    const config = await getConfig()
     res.json(config)
   } catch (error) {
     //console.error('获取配置失败:', error)
@@ -209,11 +206,10 @@ app.get('/api/admin/config', checkAuth, checkAdmin, async (req, res) => {
 // 更新配置（需要管理员权限）
 app.post('/api/admin/config', checkAuth, checkAdmin, async (req, res) => {
   try {
-    const dsn = process.env.SQL_DSN?.replace(/^'|'$/g, '')
-    const result = await updateConfig(req.body, dsn)
+    const result = await updateConfig(req.body)
     
     if (result.success) {
-      res.json({ message: '配置更新成功' })
+      res.json({ message: '配置更新成功~' })
     } else {
       res.status(500).json({ error: result.message })
     }
@@ -226,8 +222,7 @@ app.post('/api/admin/config', checkAuth, checkAdmin, async (req, res) => {
 // 获取首页配置（不需要验证）
 app.get('/api/home/config', async (req, res) => {
   try {
-    const dsn = process.env.SQL_DSN?.replace(/^'|'$/g, '')
-    const config = await getPublicConfig(dsn)
+    const config = await getPublicConfig()
     
     // 如果不需要登录，直接返回配置
     if (!config.enableLogin) {
