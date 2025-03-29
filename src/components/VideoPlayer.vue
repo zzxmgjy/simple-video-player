@@ -321,15 +321,22 @@ const detectVideoType = (url: string): string => {
     case 'html':
       isHtmlVideo.value = true
       return 'html'
+    case 'com':
+      isHtmlVideo.value = true
+      return 'html'
+    case 'cn':
+      isHtmlVideo.value = true
+      return 'html'
     default:
       // 如果链接包含特定关键字
-      if (url.includes('m3u8')) {
+      if (url.includes('.m3u8')) {
         return 'm3u8'
       }
-      if (url.includes('html')) {
+      if (url.includes('.html') || url.includes('.com') || url.includes('.cn')) {
         isHtmlVideo.value = true
         return 'html'
       }
+
       return 'auto'
   }
 }
