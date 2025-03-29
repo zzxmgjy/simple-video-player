@@ -47,6 +47,7 @@ npm install
 复制 `.env.example` 到 `.env` 并填写相应的配置（云部署的时候不需要.env文件）：
 ```bash
 # 数据库连接字符串
+# 支持 SQL_DSN 和 PG_CONNECTION_STRING
 SQL_DSN='your_mysql_connection_string'
 ```
 
