@@ -163,6 +163,17 @@ export async function updateConfig(config) {
       // 密码不需要解密，因为前端传来的就是明文密码
       // 数据库中存储的也是明文密码
 
+      // 判断配置对象是否已经是JSON字符串
+      const isJsonString = (value) => {
+        if (typeof value !== 'string') return false
+        try {
+          const parsed = JSON.parse(value)
+          return typeof parsed === 'object' && parsed !== null
+        } catch (e) {
+          return false
+        }
+      }
+
       if (getDbConnectionInfo()?.type === 'mysql') {
         // MySQL操作
         // 先检查是否存在记录
@@ -170,14 +181,20 @@ export async function updateConfig(config) {
         
         if (rows.length > 0) {
           // 如果存在记录，执行更新
+          // 如果configToUpdate已经是JSON字符串，则直接使用，否则进行JSON.stringify()
+          const configValue = isJsonString(configToUpdate) ? configToUpdate : JSON.stringify(configToUpdate)
+          
           await connection.query('UPDATE configs SET config = ? WHERE id = ?', [
-            JSON.stringify(configToUpdate),
+            configValue,
             rows[0].id
           ])
         } else {
           // 如果不存在记录，执行插入
+          // 如果configToUpdate已经是JSON字符串，则直接使用，否则进行JSON.stringify()
+          const configValue = isJsonString(configToUpdate) ? configToUpdate : JSON.stringify(configToUpdate)
+          
           await connection.query('INSERT INTO configs (config) VALUES (?)', [
-            JSON.stringify(configToUpdate)
+            configValue
           ])
         }
       } else {
@@ -187,10 +204,12 @@ export async function updateConfig(config) {
         
         if (rows.length > 0) {
           // 如果存在记录，执行更新
-          await connection`UPDATE configs SET config = ${JSON.stringify(configToUpdate)}, updated_at = NOW() WHERE id = ${rows[0].id}`
+          // 对于PostgreSQL，直接传递对象，postgres库会自动处理JSONB类型
+          await connection`UPDATE configs SET config = ${configToUpdate}, updated_at = NOW() WHERE id = ${rows[0].id}`
         } else {
           // 如果不存在记录，执行插入
-          await connection`INSERT INTO configs (config) VALUES (${JSON.stringify(configToUpdate)})`
+          // 对于PostgreSQL，直接传递对象，postgres库会自动处理JSONB类型
+          await connection`INSERT INTO configs (config) VALUES (${configToUpdate})`
         }
       }
       
