@@ -74,6 +74,8 @@ ADMIN_PASSWORD（管理后台密码）
 
 LOGIN_JWT_SECRET_KEY（任意随机字符串，用于加密jwt，jwt用于保持登录状态，时间为24小时）
 
+#### 数据库变量配置一个就行了，二选一
+
 #### 数据库-pgsql url（比如 supabase的）
 ##### 格式：postgresql://postgres:...
 PG_CONNECTION_STRING
@@ -84,7 +86,7 @@ PG_CONNECTION_STRING
 #### 数据库-SQL-DSN
 不支持，cloudflare不支持没办法
 
-小结-部署cf需要配置基础变量和数据库变量，比较推荐使用的数据库是：pgsql url（比如：supabase）
+小结-部署cf需要配置基础变量和数据库变量，比较推荐使用的数据库是：pgsql url（比如：supabase）（变量为PG_CONNECTION_STRING）
 
 ### Vercel 部署
 
@@ -106,6 +108,8 @@ npm install
 ADMIN_PASSWORD（管理后台密码）
 
 LOGIN_JWT_SECRET_KEY（任意随机字符串，用于加密jwt，jwt用于保持登录状态，时间为24小时）
+
+#### 数据库变量配置一个就行了，二选一
 
 #### 数据库-pgsql url（比如 supabase的、neon的）
 ##### 格式：postgresql://postgres:...
