@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       host: true,
+      allowedHosts: ['mikemeee-mytt.hf.space'],
       proxy: {
         '/api': {
           target: `http://127.0.0.1:${env.API_PORT || 3001}`,
